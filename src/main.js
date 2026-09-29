@@ -7,19 +7,6 @@ function countFingerprints(p, stack, expected) {
   return count;
 }
 
-function watchR2(onPress) {
-  function onKey(event) {
-    if (event.key !== "F8" || event.code !== "Unidentified") return;
-    window.removeEventListener("keydown", onKey, true);
-    event.preventDefault();
-    onPress();
-  }
-
-  log("press R2 to load payload manager", "info");
-
-  window.addEventListener("keydown", onKey, true);
-}
-
 async function findWorkerStack(p, libKernelBase) {
   const PTHREAD_NEXT_THREAD_OFFSET = 0x38;
   const PTHREAD_STACK_ADDR_OFFSET = 0xa8;
@@ -99,6 +86,19 @@ async function findWorkerReturnSlot(p, stack, libKernelBase) {
 
 function log(message, type = "log") {
   window.writeLog(message, type);
+}
+
+function watchR2(onPress) {
+  function onKey(event) {
+    if (event.key !== "F8" || event.code !== "Unidentified") return;
+    window.removeEventListener("keydown", onKey, true);
+    event.preventDefault();
+    onPress();
+  }
+
+  log("press R2 to load payload manager", "info");
+
+  window.addEventListener("keydown", onKey, true);
 }
 
 const ROP_WAIT_MS = 20000;
@@ -310,6 +310,14 @@ async function main(userlandRW) {
   if (result.payloads) {
     log("kernel exploit complete", "info");
     log("elfldr is listening on port 9021", "info");
+    watchR2(async () => {
+      try {
+        const { loadOptionalPayloads } = await import("./kexp.js");
+        await loadOptionalPayloads(p, chain, (message) => log(message, "info"));
+      } catch (error) {
+        log(error instanceof Error ? error.message : String(error), "error");
+      }
+    });
   } else {
     log("kernel chain complete: root and sandbox escape are active", "info");
   }
