@@ -184,13 +184,6 @@ async function sendElf(name, payload, p, chain) {
 
 export async function loadOptionalPayloads(p, chain, log) {
   log("preparing optional payloads");
-  const kstuff = await mapElf("kstuff.elf", p, chain);
-  const etaHEN = await mapElf("etaHEN.elf", p, chain);
-  await sendElf("kstuff.elf", kstuff, p, chain);
-  log("kstuff.elf sent");
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  await sendElf("etaHEN.elf", etaHEN, p, chain);
-  log("etaHEN.elf sent");
   const payloadManager = await mapElf("pldmgr_v0.5.2.elf", p, chain);
   await sendElf("pldmgr_v0.5.2.elf", payloadManager, p, chain);
   log("Payload Manager sent");
